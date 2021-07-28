@@ -1,0 +1,154 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Template to Create an application load balancer, an EC2 instance in an existing VPC
+   
+Parameters:
+  ImageId:
+    Type: String
+    Description: 'Linux 2 AMI for north-virginia Region'
+    Default: 'ami-0c2b8ca1dad447f8a'
+  VpcId:
+    Type: String
+    Description: VPC id
+    Default: vpc-4542b538
+  SubnetId:
+    Type: String
+    Description: Subnet in which to launch an EC2
+    Default: subnet-fb8027a4
+  SubnetId2:
+    Type: String
+    Description: Another subnet of the VPC
+    Default: subnet-67994301
+  AvailabilityZone:
+    Type: String
+    Description: Availability Zone into which instance will launch
+    Default: us-east-1a
+  InstanceType:
+    Type: String
+    Description: Choosing  t2 micro instance type
+    Default: t2.micro
+  KeyName:
+    Description: SSH Keypair to login to the instance
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: ec2-cft-key
+
+Resources:
+  EC2Instance:
+    Type: 'AWS::EC2::Instance'
+    Properties: 
+      ImageId: !Ref ImageId
+      InstanceType: !Ref InstanceType
+      AvailabilityZone: !Ref AvailabilityZone
+      KeyName: !Ref KeyName
+      SecurityGroupIds: 
+        - !Ref EC2SecurityGroup
+      SubnetId: !Ref SubnetId
+      UserData:
+          Fn::Base64: !Sub |
+           #!/bin/bash
+           yum update -y
+           amazon-linux-extras install -y lamp-mariadb10.2-php7.2 php7.2
+           yum install -y httpd mariadb-server
+           systemctl start httpd
+           systemctl enable httpd
+           usermod -a -G apache ec2-user
+           chown -R ec2-user:apache /var/www
+           chmod 2775 /var/www
+           find /var/www -type d -exec chmod 2775 {} \;
+           find /var/www -type f -exec chmod 0664 {} \;
+           echo "<?php phpinfo(); ?>" > /var/www/html/phpinfo.php
+  EC2SecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      VpcId: !Ref VpcId
+      GroupDescription: SG to allow SSH access via port 22
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: '0.0.0.0/0'
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId:
+            Ref: ELBSecurityGroup    
+      Tags:
+        - Key: Name
+          Value: ec2-security-group
+  ELBSecurityGroup:
+        Type: AWS::EC2::SecurityGroup
+        Properties:
+            GroupDescription: 'SSH and Port 80'
+            VpcId: !Ref VpcId
+            SecurityGroupIngress:
+                - IpProtocol: tcp
+                  FromPort: 80
+                  ToPort: 80
+                  CidrIp: 0.0.0.0/0    
+            Tags:
+              - Key: Name
+                Value: alb-security-group
+  EC2TargetGroup:
+      Type: AWS::ElasticLoadBalancingV2::TargetGroup
+      Properties:
+        HealthCheckIntervalSeconds: 30
+        HealthCheckProtocol: HTTP
+        HealthCheckTimeoutSeconds: 29
+        HealthyThresholdCount: 7
+        Matcher:
+          HttpCode: '200'
+        Name: EC2TargetGroup
+        Port: 80
+        Protocol: HTTP
+        TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '20'
+        Targets:
+        - Id:
+            Ref: EC2Instance
+          Port: 80
+        UnhealthyThresholdCount: 3
+        VpcId: !Ref VpcId
+        Tags:
+        - Key: Name
+          Value: EC2TargetGroup
+        - Key: Port
+          Value: 80                    
+  ALBListener:
+      Type: AWS::ElasticLoadBalancingV2::Listener
+      Properties:
+        DefaultActions:
+          - Type: forward
+            TargetGroupArn:
+              Ref: EC2TargetGroup
+        LoadBalancerArn:
+            Ref: ApplicationLoadBalancer
+        Port: 80
+        Protocol: HTTP
+  ApplicationLoadBalancer:
+      Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+      Properties:
+        Scheme: internet-facing 
+        Subnets: 
+        - Ref: SubnetId
+        - Ref: SubnetId2
+        SecurityGroups:
+        - Ref: ELBSecurityGroup
+Outputs:
+  EC2InstanceId:
+    Description: 'Instance Id' 
+    Value: 
+      Ref: EC2Instance
+  VPC:
+    Description: 'VPC Id' 
+    Value: !Ref VpcId
+  ALBHostname:
+    Description: 'ALB hostname' 
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+  EC2TargetGroup:
+    Description: 'Target Group for EC2' 
+    Value: 
+      Ref: EC2TargetGroup
+  ALB:
+    Description: 'Application Load Balancer' 
+    Value: 
+      Ref: ApplicationLoadBalancer
